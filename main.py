@@ -11,25 +11,34 @@ import time
 from fastapi import Query
 from fastapi.responses import StreamingResponse, PlainTextResponse
 from io import StringIO
+import os
 
 # 🔥 MongoDB
 from pymongo import MongoClient
 
 # =========================
-# MONGODB CONFIG
+# MONGODB CONFIG (SAFE)
 # =========================
 MONGO_URL = "YOUR_MONGODB_URL"
 
-client = MongoClient(MONGO_URL)
-db = client["sensor_db"]
-collection = db["sensor_data"]
+try:
+    client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=3000)
+    db = client["sensor_db"]
+    collection = db["sensor_data"]
+    client.server_info()  # force connection test
+except:
+    print("MongoDB not connected")
+    collection = None
 
 # =========================
 # APP
 # =========================
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 latest_data = []
 last_update_time = 0
@@ -62,25 +71,21 @@ def history_page(request: Request):
 def upload_data(data: SensorData):
     global latest_data, last_update_time
 
-    try:
-        doc = {
-            "timestamp": data.timestamp,
-            "values": data.values
-        }
-
-        collection.insert_one(doc)
-
-    except Exception as e:
-        print("MongoDB Error:", e)
-
-    latest_data = {
+    doc = {
         "timestamp": data.timestamp,
         "values": data.values
     }
 
+    try:
+        if collection:
+            collection.insert_one(doc)
+    except Exception as e:
+        print("MongoDB Error:", e)
+
+    latest_data = doc
     last_update_time = time.time()
 
-    return {"message": "Data saved to MongoDB"}
+    return {"message": "Data saved"}
 
 # =========================
 # LATEST DATA
@@ -92,13 +97,16 @@ latest_data = {
 
 @app.get("/latest")
 def get_latest():
-    doc = collection.find().sort("_id", -1).limit(1)
-
-    for d in doc:
-        return {
-            "timestamp": d["timestamp"],
-            "values": d["values"]
-        }
+    try:
+        if collection:
+            doc = collection.find().sort("_id", -1).limit(1)
+            for d in doc:
+                return {
+                    "timestamp": d["timestamp"],
+                    "values": d["values"]
+                }
+    except:
+        pass
 
     return latest_data
 
@@ -119,9 +127,13 @@ def get_history(start: str = Query(None), end: str = Query(None), limit: int = 5
         else:
             query["timestamp"] = {"$lte": end}
 
-    data = list(
-        collection.find(query).sort("_id", -1).limit(limit)
-    )
+    try:
+        if collection:
+            data = list(collection.find(query).sort("_id", -1).limit(limit))
+        else:
+            data = []
+    except:
+        data = []
 
     history = []
 
@@ -150,7 +162,13 @@ def download_data(start: str = None, end: str = None):
         else:
             query["timestamp"] = {"$lte": end}
 
-    data = list(collection.find(query).sort("_id", -1))
+    try:
+        if collection:
+            data = list(collection.find(query).sort("_id", -1))
+        else:
+            data = []
+    except:
+        data = []
 
     output = StringIO()
     writer = csv.writer(output)
@@ -183,17 +201,6 @@ def device_status():
         return {"device": "disconnected"}
     else:
         return {"device": "connected"}
-
-# =========================
-# DEBUG
-# =========================
-@app.get("/debug_time")
-def debug_time():
-    return {
-        "last_update_time": last_update_time,
-        "current_time": time.time(),
-        "difference": time.time() - last_update_time
-    }
 
 # =========================
 # HEALTH
