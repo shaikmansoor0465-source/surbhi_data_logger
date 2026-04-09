@@ -208,3 +208,7 @@ def device_status():
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     return PlainTextResponse("OK")
+
+@app.get("/test")
+def test():
+    return {"status": "working"}
